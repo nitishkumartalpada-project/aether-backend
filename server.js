@@ -5,6 +5,8 @@ const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const { exec } = require("child_process");
+const util = require("util");
+const execPromise = util.promisify(exec);
 const axios = require("axios");
 const simpleGit = require("simple-git");
 const mongoose = require("mongoose");
@@ -54,7 +56,11 @@ const multiUpload = upload.fields([
 	{ name: "thumbnailFile", maxCount: 1 },
 ]);
 
-// --- PHASE 4 & 5: DYNAMIC UPLOAD & DEPLOY ROUTE ---
+// --- THE GLOBAL PROCESSING QUEUE ---
+// This guarantees FFmpeg never runs twice at the same time, saving the 512MB RAM
+const processingQueue = [];
+let isProcessing = false;
+
 app.post("/api/ingest", multiUpload, (req, res) => {
 	console.log("\n📡 --- NEW PAYLOAD INBOUND ---");
 	const rawVideoPath = req.files["mediaFile"][0].path;
@@ -62,81 +68,128 @@ app.post("/api/ingest", multiUpload, (req, res) => {
 	const uniqueNodeName = `aether-${req.body.type}-${Date.now()}`;
 	const outputFolder = path.join(processedDir, uniqueNodeName);
 
+	// 1. Immediately respond to the client so the browser doesn't timeout
 	res.json({
 		success: true,
-		message: "Upload secured. Processing & Deploying to Cloud Edge.",
+		message: "Upload secured. Placed in Aether Cloud Queue for processing.",
 	});
 
-	processMedia(
-		rawVideoPath,
-		rawThumbPath,
+	// 2. Add to the Global Queue
+	processingQueue.push({
+		videoPath: rawVideoPath,
+		thumbPath: rawThumbPath,
 		outputFolder,
-		uniqueNodeName,
-		req.body,
+		nodeName: uniqueNodeName,
+		metadata: req.body,
+	});
+
+	console.log(
+		`📥 Added ${uniqueNodeName} to queue. Position: ${processingQueue.length}`,
 	);
+
+	// 3. Trigger the worker if it's currently sleeping
+	if (!isProcessing) {
+		processNextInQueue();
+	}
 });
 
-function processMedia(videoPath, thumbPath, outputFolder, nodeName, metadata) {
-	console.log(`\n⚙️  Aether Transcoder initiated for: ${nodeName}`);
+// --- THE QUEUE WORKER ---
+async function processNextInQueue() {
+	if (processingQueue.length === 0) {
+		isProcessing = false;
+		console.log("🛌 Aether Engine Queue Empty. Standing by.");
+		return;
+	}
+
+	isProcessing = true;
+	const job = processingQueue.shift();
+
+	try {
+		await executeSequentialTranscode(
+			job.videoPath,
+			job.thumbPath,
+			job.outputFolder,
+			job.nodeName,
+			job.metadata,
+		);
+	} catch (error) {
+		console.error(`❌ Critical Failure on Job ${job.nodeName}:`, error);
+	}
+
+	// Recursively process the next video in line!
+	processNextInQueue();
+}
+
+// --- SEQUENTIAL TRANSCODER (STRICT RAM LIMITER) ---
+async function executeSequentialTranscode(
+	videoPath,
+	thumbPath,
+	outputFolder,
+	nodeName,
+	metadata,
+) {
+	console.log(`\n⚙️  Aether Transcoder Initiated for: ${nodeName}`);
 	fs.mkdirSync(outputFolder, { recursive: true });
 
 	const thumbExt = path.extname(thumbPath);
 	const finalThumbPath = path.join(outputFolder, `thumbnail${thumbExt}`);
 	fs.renameSync(thumbPath, finalThumbPath);
 
-	exec(
-		`ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "${videoPath}"`,
-		(err, stdout) => {
-			const originalHeight = parseInt(stdout.trim()) || 1080;
-			console.log(
-				`📏 Detected Source Resolution Height: ${originalHeight}p`,
-			);
+	try {
+		const { stdout } = await execPromise(
+			`ffprobe -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "${videoPath}"`,
+		);
+		const originalHeight = parseInt(stdout.trim()) || 1080;
+		console.log(
+			`📏 Source Height: ${originalHeight}p. Engaging Sequential Safe-Mode Encoding...`,
+		);
 
-			// LIMITER 1: Restrict FFmpeg to 1 CPU thread
-			let ffmpegCmd = `ffmpeg -threads 1 -i "${videoPath}" `;
-			let maps = "";
-			let scales = "";
-			let streamMap = `-var_stream_map "`;
-			let streamIndex = 0;
+		// Multi-tier, but processed strictly ONE AT A TIME
+		const tiers = [
+			{ height: 1080, bit: "3000k", res: "1920x1080", name: "v0" },
+			{ height: 720, bit: "1500k", res: "1280x720", name: "v1" },
+			{ height: 480, bit: "1000k", res: "854x480", name: "v2" },
+		];
 
-			// LIMITER 2: Removed 1080p tier. Caps max resolution at 720p to save RAM.
-			const tiers = [
-				{ height: 720, bit: "1500k", res: "1280x720" },
-				{ height: 480, bit: "1000k", res: "854x480" },
-				{ height: 360, bit: "600k", res: "640x360" },
-			];
+		let masterPlaylistContent = "#EXTM3U\n#EXT-X-VERSION:3\n";
+		let streamIndex = 0;
 
-			tiers.forEach((tier) => {
-				if (originalHeight >= tier.height - 50 || streamIndex === 0) {
-					maps += `-map 0:v:0 -map 0:a:0 `;
+		for (const tier of tiers) {
+			if (originalHeight >= tier.height - 50 || streamIndex === 0) {
+				console.log(`⏳ Encoding ${tier.height}p stream...`);
+				const tierFolder = path.join(outputFolder, tier.name);
+				fs.mkdirSync(tierFolder);
 
-					// LIMITER 3: Added -preset ultrafast and -max_muxing_queue_size 1024
-					scales += `-s:v:${streamIndex} ${tier.res} -c:v:${streamIndex} libx264 -preset ultrafast -b:v:${streamIndex} ${tier.bit} -max_muxing_queue_size 1024 `;
+				// STRICT MEMORY LIMIT COMMAND: 1 Thread, Ultrafast, Buffer Limited
+				const ffmpegCmd =
+					`ffmpeg -y -threads 1 -i "${videoPath}" ` +
+					`-s ${tier.res} -c:v libx264 -preset ultrafast -tune zerolatency ` +
+					`-b:v ${tier.bit} -maxrate ${tier.bit} -bufsize ${tier.bit} -max_muxing_queue_size 1024 ` +
+					`-f hls -hls_time 6 -hls_list_size 0 -hls_segment_filename "${tierFolder}/fileSequence%d.ts" "${tierFolder}/prog_index.m3u8"`;
 
-					streamMap += `v:${streamIndex},a:${streamIndex} `;
-					fs.mkdirSync(path.join(outputFolder, `v${streamIndex}`));
-					streamIndex++;
-				}
-			});
-			streamMap = streamMap.trim() + `" `;
+				// AWAIT blocks the loop, guaranteeing RAM drops back down between resolutions
+				await execPromise(ffmpegCmd);
 
-			ffmpegCmd +=
-				maps +
-				scales +
-				streamMap +
-				`-master_pl_name master.m3u8 -f hls -hls_time 6 -hls_list_size 0 -hls_segment_filename "v%v/fileSequence%d.ts" "v%v/prog_index.m3u8"`;
+				const bandwidth = parseInt(tier.bit.replace("k", "000")) * 1.2;
+				masterPlaylistContent += `#EXT-X-STREAM-INF:BANDWIDTH=${bandwidth},RESOLUTION=${tier.res}\n${tier.name}/prog_index.m3u8\n`;
 
-			exec(ffmpegCmd, { cwd: outputFolder }, (error) => {
-				if (error) {
-					console.error(`❌ Transcoder Failed:`, error);
-					return;
-				}
-				console.log(`✅ Transcoder Complete. Cleaning up raw video...`);
-				fs.unlinkSync(videoPath);
-				deployToGitHub(outputFolder, nodeName, metadata, thumbExt);
-			});
-		},
-	);
+				streamIndex++;
+			}
+		}
+
+		fs.writeFileSync(
+			path.join(outputFolder, "master.m3u8"),
+			masterPlaylistContent,
+		);
+		console.log(
+			`✅ All streams encoded sequentially. Master playlist generated.`,
+		);
+
+		fs.unlinkSync(videoPath);
+		await deployToGitHub(outputFolder, nodeName, metadata, thumbExt);
+	} catch (error) {
+		throw error;
+	}
 }
 
 async function deployToGitHub(folderPath, repoName, metadata, thumbExt) {
@@ -187,7 +240,7 @@ async function deployToGitHub(folderPath, repoName, metadata, thumbExt) {
 		});
 
 		await newMedia.save();
-		console.log(`\n🎉 PIPELINE COMPLETE: Database Synced!`);
+		console.log(`🎉 PIPELINE COMPLETE: Database Synced!`);
 	} catch (error) {
 		console.error("❌ Cloud Deployment Failed:", error.message);
 	}
@@ -371,7 +424,7 @@ app.get("/api/media/:id", async (req, res) => {
 	}
 });
 
-// --- PHASE 10 & 11: REDIS TELEMETRY & SHADOW PROFILING ---
+// --- TELEMETRY ROUTES ---
 app.post("/api/telemetry", async (req, res) => {
 	try {
 		const { ghostId, mediaId, genre, watchTimeSeconds } = req.body;
@@ -396,20 +449,18 @@ app.post("/api/telemetry", async (req, res) => {
 				watchTimeSeconds,
 				genre,
 			);
-
 			console.log(
-				`📡 Telemetry Profile Updated: Ghost [${ghostId}] watched ${watchTimeSeconds}s of ${genre}`,
+				`📡 Telemetry Updated: Ghost [${ghostId}] watched ${watchTimeSeconds}s of ${genre}`,
 			);
 		}
 
 		res.status(204).send();
 	} catch (error) {
-		console.error("Redis Telemetry Drop:", error.message);
 		res.status(500).send();
 	}
 });
 
-// --- NLP TEXT INDEXING (For Description & Title AI) ---
+// --- NLP TEXT INDEXING ---
 mongoose.connection.once("open", async () => {
 	try {
 		await Media.collection.createIndex({
@@ -424,7 +475,6 @@ mongoose.connection.once("open", async () => {
 
 const rateLimit = require("express-rate-limit");
 
-// --- SECURE ADMIN AUTHENTICATION ---
 const adminAuthLimiter = rateLimit({
 	windowMs: 15 * 60 * 1000,
 	max: 5,
@@ -444,7 +494,6 @@ app.post("/api/admin/auth", adminAuthLimiter, (req, res) => {
 	}
 });
 
-// --- PHASE 12: ADMIN CONTROL ROUTES ---
 app.get("/api/admin/media", async (req, res) => {
 	try {
 		const allMedia = await Media.find().sort({ uploadTimestamp: -1 });
@@ -489,7 +538,6 @@ app.delete(
 	},
 );
 
-// LIMITER 4: Let Render assign the port automatically!
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
 	console.log(`🚀 Aether Core Engine active on port ${PORT}`),
