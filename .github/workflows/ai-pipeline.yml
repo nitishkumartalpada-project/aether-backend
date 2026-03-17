@@ -1,0 +1,40 @@
+name: Aether Nightly Spark Pipeline
+
+on:
+    # 1. Runs automatically at 2:00 AM UTC every day
+    schedule:
+        - cron: "0 2 * * *"
+    # 2. Allows you to manually trigger it from the GitHub UI for testing
+    workflow_dispatch:
+
+jobs:
+    run-spark-etl:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: 📥 Checkout Code
+              uses: actions/checkout@v3
+
+            - name: 🐍 Set up Python
+              uses: actions/setup-python@v4
+              with:
+                  python-version: "3.9"
+
+            - name: ☕ Install Java (Required for Apache Spark)
+              uses: actions/setup-java@v3
+              with:
+                  distribution: "temurin"
+                  java-version: "11"
+
+            - name: 📦 Install Big Data Dependencies
+              run: |
+                  python -m pip install --upgrade pip
+                  pip install pyspark redis pymongo
+
+            - name: 🚀 Execute PySpark ML Pipeline
+              env:
+                  # These pull securely from your GitHub Secrets
+                  REDIS_URL: ${{ secrets.REDIS_URL }}
+                  MONGODB_URI: ${{ secrets.MONGODB_URI }}
+              run: |
+                  python ai-pipeline/spark_engine.py
