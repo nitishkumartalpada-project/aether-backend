@@ -206,6 +206,12 @@ async function deployToGitHub(folderPath, repoName, metadata, thumbExt) {
 
 		const git = simpleGit(folderPath);
 		await git.init();
+
+		// --- ADD THESE TWO EXACT LINES ---
+		await git.addConfig("user.name", "Aether Pipeline");
+		await git.addConfig("user.email", "aether@pipeline.local");
+		// ---------------------------------
+
 		await git.add("./*");
 		await git.commit("Aether Core Automated Ingestion");
 		await git.branch(["-M", "main"]);
