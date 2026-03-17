@@ -92,14 +92,15 @@ function processMedia(videoPath, thumbPath, outputFolder, nodeName, metadata) {
 				`📏 Detected Source Resolution Height: ${originalHeight}p`,
 			);
 
-			let ffmpegCmd = `ffmpeg -i "${videoPath}" `;
+			// LIMITER 1: Restrict FFmpeg to 1 CPU thread
+			let ffmpegCmd = `ffmpeg -threads 1 -i "${videoPath}" `;
 			let maps = "";
 			let scales = "";
 			let streamMap = `-var_stream_map "`;
 			let streamIndex = 0;
 
+			// LIMITER 2: Removed 1080p tier. Caps max resolution at 720p to save RAM.
 			const tiers = [
-				{ height: 1080, bit: "3000k", res: "1920x1080" },
 				{ height: 720, bit: "1500k", res: "1280x720" },
 				{ height: 480, bit: "1000k", res: "854x480" },
 				{ height: 360, bit: "600k", res: "640x360" },
@@ -108,7 +109,10 @@ function processMedia(videoPath, thumbPath, outputFolder, nodeName, metadata) {
 			tiers.forEach((tier) => {
 				if (originalHeight >= tier.height - 50 || streamIndex === 0) {
 					maps += `-map 0:v:0 -map 0:a:0 `;
-					scales += `-s:v:${streamIndex} ${tier.res} -c:v:${streamIndex} libx264 -b:v:${streamIndex} ${tier.bit} `;
+
+					// LIMITER 3: Added -preset ultrafast and -max_muxing_queue_size 1024
+					scales += `-s:v:${streamIndex} ${tier.res} -c:v:${streamIndex} libx264 -preset ultrafast -b:v:${streamIndex} ${tier.bit} -max_muxing_queue_size 1024 `;
+
 					streamMap += `v:${streamIndex},a:${streamIndex} `;
 					fs.mkdirSync(path.join(outputFolder, `v${streamIndex}`));
 					streamIndex++;
@@ -485,7 +489,8 @@ app.delete(
 	},
 );
 
-const PORT = 5000;
+// LIMITER 4: Let Render assign the port automatically!
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
 	console.log(`🚀 Aether Core Engine active on port ${PORT}`),
 );
