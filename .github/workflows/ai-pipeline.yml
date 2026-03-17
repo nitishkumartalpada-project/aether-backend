@@ -1,10 +1,8 @@
 name: Aether Nightly Spark Pipeline
 
 on:
-    # 1. Runs automatically at 2:00 AM UTC every day
     schedule:
         - cron: "0 2 * * *"
-    # 2. Allows you to manually trigger it from the GitHub UI for testing
     workflow_dispatch:
 
 jobs:
@@ -24,7 +22,7 @@ jobs:
               uses: actions/setup-java@v3
               with:
                   distribution: "temurin"
-                  java-version: "11"
+                  java-version: "17"
 
             - name: 📦 Install Big Data Dependencies
               run: |
@@ -33,7 +31,6 @@ jobs:
 
             - name: 🚀 Execute PySpark ML Pipeline
               env:
-                  # These pull securely from your GitHub Secrets
                   REDIS_URL: ${{ secrets.REDIS_URL }}
                   MONGODB_URI: ${{ secrets.MONGODB_URI }}
               run: |
