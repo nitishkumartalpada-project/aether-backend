@@ -544,28 +544,6 @@ app.delete(
 	},
 );
 
-const rateLimit = require("express-rate-limit");
-
-// --- SECURE ADMIN AUTHENTICATION ---
-const adminAuthLimiter = rateLimit({
-	windowMs: 15 * 60 * 1000,
-	max: 5,
-	message: {
-		error: "Security breach detected. Mainframe locked for 15 minutes.",
-	},
-	standardHeaders: true,
-	legacyHeaders: false,
-});
-
-app.post("/api/admin/auth", adminAuthLimiter, (req, res) => {
-	const { password } = req.body;
-	if (password === process.env.ADMIN_PASSWORD) {
-		res.json({ success: true });
-	} else {
-		res.status(401).json({ error: "Invalid override code." });
-	}
-});
-
 // --- PHASE 12: ADMIN CONTROL ROUTES ---
 app.get("/api/admin/media", async (req, res) => {
 	try {
