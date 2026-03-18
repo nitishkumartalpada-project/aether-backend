@@ -544,6 +544,74 @@ app.delete(
 	},
 );
 
+const rateLimit = require("express-rate-limit");
+
+// --- SECURE ADMIN AUTHENTICATION ---
+const adminAuthLimiter = rateLimit({
+	windowMs: 15 * 60 * 1000,
+	max: 5,
+	message: {
+		error: "Security breach detected. Mainframe locked for 15 minutes.",
+	},
+	standardHeaders: true,
+	legacyHeaders: false,
+});
+
+app.post("/api/admin/auth", adminAuthLimiter, (req, res) => {
+	const { password } = req.body;
+	if (password === process.env.ADMIN_PASSWORD) {
+		res.json({ success: true });
+	} else {
+		res.status(401).json({ error: "Invalid override code." });
+	}
+});
+
+// --- PHASE 12: ADMIN CONTROL ROUTES ---
+app.get("/api/admin/media", async (req, res) => {
+	try {
+		const allMedia = await Media.find().sort({ uploadTimestamp: -1 });
+		res.json(allMedia);
+	} catch (error) {
+		res.status(500).json({ error: "Admin fetch failed." });
+	}
+});
+
+app.delete("/api/admin/media/:id", async (req, res) => {
+	try {
+		const media = await Media.findByIdAndDelete(req.params.id);
+		if (!media) return res.status(404).json({ error: "Media not found." });
+		res.json({
+			success: true,
+			message: "Media eradicated from Aether Core.",
+		});
+	} catch (error) {
+		res.status(500).json({ error: "Deletion failed." });
+	}
+});
+
+app.delete(
+	"/api/admin/media/:mediaId/comment/:commentTimestamp",
+	async (req, res) => {
+		try {
+			const { mediaId, commentTimestamp } = req.params;
+			const media = await Media.findById(mediaId);
+
+			if (!media)
+				return res.status(404).json({ error: "Media not found." });
+
+			media.comments = media.comments.filter(
+				(c) => new Date(c.timestamp).toISOString() !== commentTimestamp,
+			);
+			await media.save();
+
+			res.json({ success: true, message: "Comment purged." });
+		} catch (error) {
+			res.status(500).json({ error: "Comment deletion failed." });
+		}
+	},
+);
+
+// LIMITER 4: Let Render assign the port automatically!
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
 	console.log(`🚀 Aether Core Engine active on port ${PORT}`),
