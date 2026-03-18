@@ -491,6 +491,12 @@ const adminAuthLimiter = rateLimit({
 	legacyHeaders: false,
 });
 
+app.get("/api/admin/auth", (req, res) => {
+	res.status(200).json({
+		message: "Auth endpoint active. Awaiting password.",
+	});
+});
+
 app.post("/api/admin/auth", adminAuthLimiter, (req, res) => {
 	const { password } = req.body;
 	if (password === process.env.ADMIN_PASSWORD) {
