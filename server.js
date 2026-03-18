@@ -429,7 +429,6 @@ app.get("/api/media/:id", async (req, res) => {
 		res.status(500).json({ error: "Failed to fetch media." });
 	}
 });
-
 // --- TELEMETRY ROUTES ---
 app.post("/api/telemetry", async (req, res) => {
 	try {
@@ -459,7 +458,6 @@ app.post("/api/telemetry", async (req, res) => {
 				`📡 Telemetry Updated: Ghost [${ghostId}] watched ${watchTimeSeconds}s of ${genre}`,
 			);
 		}
-
 		res.status(204).send();
 	} catch (error) {
 		res.status(500).send();
@@ -479,6 +477,7 @@ mongoose.connection.once("open", async () => {
 	}
 });
 
+// --- PHASE 12: ADMIN CONTROL ROUTES ---
 const rateLimit = require("express-rate-limit");
 
 const adminAuthLimiter = rateLimit({
@@ -500,51 +499,6 @@ app.post("/api/admin/auth", adminAuthLimiter, (req, res) => {
 	}
 });
 
-app.get("/api/admin/media", async (req, res) => {
-	try {
-		const allMedia = await Media.find().sort({ uploadTimestamp: -1 });
-		res.json(allMedia);
-	} catch (error) {
-		res.status(500).json({ error: "Admin fetch failed." });
-	}
-});
-
-app.delete("/api/admin/media/:id", async (req, res) => {
-	try {
-		const media = await Media.findByIdAndDelete(req.params.id);
-		if (!media) return res.status(404).json({ error: "Media not found." });
-		res.json({
-			success: true,
-			message: "Media eradicated from Aether Core.",
-		});
-	} catch (error) {
-		res.status(500).json({ error: "Deletion failed." });
-	}
-});
-
-app.delete(
-	"/api/admin/media/:mediaId/comment/:commentTimestamp",
-	async (req, res) => {
-		try {
-			const { mediaId, commentTimestamp } = req.params;
-			const media = await Media.findById(mediaId);
-
-			if (!media)
-				return res.status(404).json({ error: "Media not found." });
-
-			media.comments = media.comments.filter(
-				(c) => new Date(c.timestamp).toISOString() !== commentTimestamp,
-			);
-			await media.save();
-
-			res.json({ success: true, message: "Comment purged." });
-		} catch (error) {
-			res.status(500).json({ error: "Comment deletion failed." });
-		}
-	},
-);
-
-// --- PHASE 12: ADMIN CONTROL ROUTES ---
 app.get("/api/admin/media", async (req, res) => {
 	try {
 		const allMedia = await Media.find().sort({ uploadTimestamp: -1 });
