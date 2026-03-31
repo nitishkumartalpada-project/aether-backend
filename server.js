@@ -188,6 +188,14 @@ async function executeSequentialTranscode(
 
 		fs.unlinkSync(videoPath);
 		await deployToGitHub(outputFolder, nodeName, metadata, thumbExt);
+
+		// AUTO-CLEANUP: Wipe all local artifacts after successful GitHub push
+		try {
+			fs.rmSync(outputFolder, { recursive: true, force: true });
+			console.log(`🧹 System Clean: Ephemeral files for ${nodeName} wiped from server disk.`);
+		} catch (cleanupError) {
+			console.error(`⚠️ Cleanup failed for ${nodeName}:`, cleanupError.message);
+		}
 	} catch (error) {
 		throw error;
 	}
